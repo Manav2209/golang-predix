@@ -2,25 +2,56 @@ package handler
 
 import (
 	"encoding/json"
+	"net/http"
+	"predix/internal/dto"
 	"predix/pkg/redis"
+
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func (h *Handler) CreateOrder(c *gin.Context) {
-	var req struct {
-		EventID string  `json:"eventId" binding:"required"`
-		Side    string  `json:"side" binding:"required,oneof=YES NO"`
-		Amount  float64 `json:"amount" binding:"required,gt=0"`
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized", "success": false})
+		return
 	}
+
+	var req dto.CreateOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "success": false})
+		return
+	}
+
+	if req.OrderType == "LIMIT" && req.Price <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price is required for LIMIT orders", "success": false})
+		return
+	}
+
+	eventID, err := uuid.Parse(req.EventID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event ID", "success": false})
+		return
+	}
+
+	event, err := h.Queries.GetEventByID(c.Request.Context(), eventID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "event not found or not active", "success": false})
+		return
+	}
+	if !event.IsActive.Bool {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "event is not active", "success": false})
 		return
 	}
 
 	payload := map[string]interface{}{
-		"eventId": req.EventID,
-		"side":    req.Side,
-		"amount":  req.Amount,
+		"eventId":   req.EventID,
+		"price":     req.Price,
+		"quantity":  req.Quantity,
+		"side":      req.Side,
+		"outcome":   req.Outcome,
+		"orderType": req.OrderType,
+		"userId":    userID,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -30,20 +61,56 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 	}
 
 	resp, err := h.RedisManager.SendAndAwait(c.Request.Context(), msg)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	if err != nil || !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "orderbook not responding", "success": false})
 		return
 	}
 
-	if !resp.Success {
-		c.JSON(400, gin.H{"error": resp.Error})
-		return
-	}
-
-	c.JSON(200, resp.Data)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp.Data})
 }
 
 func (h *Handler) DeleteOrder(c *gin.Context) {
-	orderId := c.Param("orderId")
-	c.JSON(200, gin.H{"message": "delete order: " + orderId})
+	orderID := c.Param("orderId")
+
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized", "success": false})
+		return
+	}
+
+	oid, err := uuid.Parse(orderID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order ID", "success": false})
+		return
+	}
+
+	order, err := h.Queries.GetOrderByID(c.Request.Context(), oid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found", "success": false})
+		return
+	}
+
+	if order.UserID.String() != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you are not authorized to cancel this order", "success": false})
+		return
+	}
+
+	payload := map[string]interface{}{
+		"orderId": orderID,
+		"eventId": order.EventID.String(),
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	msg := redis.MessageToEngine{
+		Type:    "CANCEL_ORDER",
+		Payload: payloadBytes,
+	}
+
+	resp, err := h.RedisManager.SendAndAwait(c.Request.Context(), msg)
+	if err != nil || !resp.Success {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "orderbook not responding", "success": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp.Data})
 }

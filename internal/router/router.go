@@ -7,36 +7,41 @@ import (
 )
 
 func SetupRoutes(r *gin.Engine, h *handler.Handler) {
-	// Public routes
+	// Health
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "hello"})
 	})
+	r.GET("/ping", func(c *gin.Context) {
+		c.String(200, "pong")
+	})
 
-	// Auth routes
-	r.POST("/signup", h.Signup)
-	r.POST("/signin", h.Signin)
+	// Auth (public)
+	auth := r.Group("/auth")
+	{
+		auth.POST("/signup", h.Signup)
+		auth.POST("/signin", h.Signin)
+	}
 
 	// Protected routes
-	auth := r.Group("/")
-	auth.Use(middleware.AuthMiddleware())
+	protected := r.Group("/")
+	protected.Use(middleware.AuthMiddleware())
 	{
-		auth.GET("/me", h.Me)
+		// User
+		protected.GET("/me", h.Me)
+		protected.GET("/position", h.GetPosition)
+		protected.GET("/balances", h.GetBalances)
 
 		// Events
-		auth.GET("/events", h.GetEvents)
-		auth.POST("/event", h.CreateEvent)
-		auth.GET("/event/:id", h.GetEvent)
+		protected.GET("/events", h.GetEvents)
+		protected.GET("/event/:id", h.GetEvent)
+		protected.POST("/event", h.CreateEvent)
 
 		// Orders
-		auth.POST("/order", h.CreateOrder)
-		auth.DELETE("/order/:orderId", h.DeleteOrder)
+		protected.POST("/order", h.CreateOrder)
+		protected.DELETE("/order/:orderId", h.DeleteOrder)
 
 		// Orderbook
-		auth.GET("/orderbook/:eventId", h.GetOrderbook)
-		auth.GET("/orderbook/:eventId/depth", h.GetOrderbookDepth)
-
-		// User
-		auth.GET("/position", h.GetPosition)
-		auth.GET("/balances", h.GetBalances)
+		protected.GET("/orderbook/:eventId", h.GetOrderbook)
+		protected.GET("/orderbook/:eventId/depth", h.GetOrderbookDepth)
 	}
 }
