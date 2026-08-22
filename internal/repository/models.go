@@ -5,11 +5,38 @@
 package repository
 
 import (
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Event struct {
+	ID          uuid.UUID
+	Title       string
+	Description string
+	Question    string
+	Thumbnail   string
+	IsActive    pgtype.Bool
+	ExpiresAt   pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type Order struct {
+	ID        uuid.UUID
+	EventID   uuid.UUID
+	UserID    uuid.UUID
+	OrderType string
+	Outcome   string
+	Side      string
+	Quantity  pgtype.Numeric
+	Price     pgtype.Numeric
+	Status    string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type User struct {
-	ID           pgtype.UUID
+	ID           uuid.UUID
 	Email        string
 	PasswordHash string
 	CreatedAt    pgtype.Timestamptz
