@@ -3,26 +3,35 @@ package main
 import (
 	"context"
 	"log"
+	
 	"predix/internal/handler"
 	"predix/internal/repository"
 	"predix/internal/router"
 	"predix/pkg/redis"
+	"predix/pkg/auth" 
+	"predix/pkg/config"
+	
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
-	ctx := context.Background()
+	
+	// Load config
+	cfg := config.Load()
 
+	auth.Init(cfg.JWTSecret)
+
+	ctx := context.Background()
 	// PostgreSQL
-	conn, err := pgxpool.New(ctx, "postgresql://neondb_owner:npg_8wNsl5kYKtIr@ep-spring-cell-ax0gjefl-pooler.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+    conn, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal("DB connection failed:", err)
 	}
 	defer conn.Close()
 
 	// Redis
-	redisManager := redis.NewRedisManager("localhost:6379", "")
+    redisManager := redis.NewRedisManager(cfg.RedisURL, "")
 	defer redisManager.Close()
 
 	queries := repository.New(conn)

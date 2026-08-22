@@ -6,8 +6,15 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte("your-secret-key-change-in-production")
+var jwtSecret []byte // 👈 now private and set at runtime
 
+// Init MUST be called before GenerateToken or ValidateToken
+func Init(secret string) {
+    if secret == "" {
+        panic("JWT_SECRET is required but not set")
+    }
+    jwtSecret = []byte(secret)
+}
 type Claims struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
