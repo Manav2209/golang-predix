@@ -10,7 +10,6 @@ import (
 	"predix/pkg/redis"
 	"predix/pkg/auth" 
 	"predix/pkg/config"
-	
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

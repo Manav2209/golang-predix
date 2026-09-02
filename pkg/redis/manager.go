@@ -98,3 +98,8 @@ func (r *RedisManager) Close() error {
 	}
 	return r.publisher.Close()
 }
+
+// GetClient returns the underlying Redis client (for engine)
+func (r *RedisManager) GetClient() *redis.Client {
+	return r.client
+}
