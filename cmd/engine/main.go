@@ -16,22 +16,36 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// Connect to Redis
-	redisManager := redis.NewRedisManager(cfg.RedisURL, "")
+	redisManager := redis.NewRedisManager(
+		cfg.RedisURL,
+		"",
+	)
 	defer redisManager.Close()
 
-	eng := engine.NewEngine(redisManager)
-	go eng.Start()
+	eng, err := engine.NewEngine(redisManager)
+	if err != nil {
+		log.Fatal("failed to create engine:", err)
+	}
 
-	log.Println("Orderbook Engine is running. Press Ctrl+C to stop.")
+	eng.Start()
 
-	// Graceful shutdown
+	log.Println("Orderbook engine is running.")
+
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	signal.Notify(
+		sigChan,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+
 	<-sigChan
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		30*time.Second,
+	)
 	defer cancel()
+
 	eng.Shutdown(ctx)
-	log.Println("Engine stopped.")
 }

@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS positions;
+DROP TABLE IF EXISTS trades;
+
+ALTER TABLE users
+DROP COLUMN IF EXISTS balance;

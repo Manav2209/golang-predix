@@ -7,7 +7,27 @@ package repository
 
 import (
 	"context"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const addBalance = `-- name: AddBalance :exec
+UPDATE users
+SET balance = balance + $2,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type AddBalanceParams struct {
+	ID      uuid.UUID
+	Balance pgtype.Numeric
+}
+
+func (q *Queries) AddBalance(ctx context.Context, arg AddBalanceParams) error {
+	_, err := q.db.Exec(ctx, addBalance, arg.ID, arg.Balance)
+	return err
+}
 
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, email, password_hash)
@@ -20,9 +40,17 @@ type CreateUserParams struct {
 	PasswordHash string
 }
 
-func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+type CreateUserRow struct {
+	ID           uuid.UUID
+	Email        string
+	PasswordHash string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error) {
 	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.PasswordHash)
-	var i User
+	var i CreateUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
@@ -33,15 +61,57 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const deductBalance = `-- name: DeductBalance :execrows
+UPDATE users
+SET balance = balance - $2,
+    updated_at = NOW()
+WHERE id = $1
+  AND balance >= $2
+`
+
+type DeductBalanceParams struct {
+	ID      uuid.UUID
+	Balance pgtype.Numeric
+}
+
+func (q *Queries) DeductBalance(ctx context.Context, arg DeductBalanceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deductBalance, arg.ID, arg.Balance)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getUserBalance = `-- name: GetUserBalance :one
+SELECT balance
+FROM users
+WHERE id = $1
+`
+
+func (q *Queries) GetUserBalance(ctx context.Context, id uuid.UUID) (pgtype.Numeric, error) {
+	row := q.db.QueryRow(ctx, getUserBalance, id)
+	var balance pgtype.Numeric
+	err := row.Scan(&balance)
+	return balance, err
+}
+
 const getUserByEmail = `-- name: GetUserByEmail :one
 SELECT id, email, password_hash, created_at, updated_at
 FROM users
 WHERE email = $1
 `
 
-func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+type GetUserByEmailRow struct {
+	ID           uuid.UUID
+	Email        string
+	PasswordHash string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
-	var i User
+	var i GetUserByEmailRow
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
