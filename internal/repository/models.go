@@ -5,6 +5,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -35,10 +37,47 @@ type Order struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type Position struct {
+	UserID    uuid.UUID
+	EventID   uuid.UUID
+	Outcome   string
+	Shares    pgtype.Numeric
+	AvgPrice  pgtype.Numeric
+	UpdatedAt time.Time
+}
+
+type Trade struct {
+	ID           uuid.UUID
+	EventID      uuid.UUID
+	Outcome      string
+	TakerOrderID uuid.UUID
+	MakerOrderID uuid.UUID
+	BuyerID      uuid.UUID
+	SellerID     uuid.UUID
+	TakerSide    string
+	Quantity     pgtype.Numeric
+	Price        pgtype.Numeric
+	CreatedAt    time.Time
+}
+
+type Transaction struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	OrderID   pgtype.UUID
+	TradeID   pgtype.UUID
+	Type      string
+	Quantity  pgtype.Numeric
+	Price     pgtype.Numeric
+	Amount    pgtype.Numeric
+	Outcome   pgtype.Text
+	CreatedAt time.Time
+}
+
 type User struct {
 	ID           uuid.UUID
 	Email        string
 	PasswordHash string
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
+	Balance      pgtype.Numeric
 }

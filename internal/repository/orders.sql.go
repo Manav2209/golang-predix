@@ -98,6 +98,24 @@ func (q *Queries) GetOrdersByUserAndEvent(ctx context.Context, arg GetOrdersByUs
 	return items, nil
 }
 
+const updateOrderFill = `-- name: UpdateOrderFill :exec
+UPDATE orders
+SET
+    status = $2,
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type UpdateOrderFillParams struct {
+	ID     uuid.UUID
+	Status string
+}
+
+func (q *Queries) UpdateOrderFill(ctx context.Context, arg UpdateOrderFillParams) error {
+	_, err := q.db.Exec(ctx, updateOrderFill, arg.ID, arg.Status)
+	return err
+}
+
 const updateOrderStatus = `-- name: UpdateOrderStatus :exec
 UPDATE orders
 SET status = $2, updated_at = NOW()
