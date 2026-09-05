@@ -1,16 +1,15 @@
 package dbworker
 
-import "time"
+import "predix/internal/events"
 
-type EventType string
+// Aliases kept so existing references compile. Prefer the events package.
+type EventType = events.EventType
 
 const (
-	EventTradeExecuted EventType = "TRADE_EXECUTED"
+	EventTradeExecuted = events.EventTradeExecuted
+	EventOrderCreated  = events.EventOrderCreated
+	EventOrderStatus   = events.EventOrderStatus
+	EventOrderCanceled = events.EventOrderCanceled
 )
 
-type EventEnvelope struct {
-	ID        string    `json:"id"`
-	Type      EventType `json:"type"`
-	CreatedAt time.Time `json:"createdAt"`
-	Data      []byte    `json:"data"`
-}
+type EventEnvelope = events.EventEnvelope

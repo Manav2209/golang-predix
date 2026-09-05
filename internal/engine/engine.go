@@ -10,7 +10,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"predix/internal/events"
 
 	"predix/pkg/redis"
 
@@ -50,6 +53,14 @@ type Engine struct {
 	// after a crash.
 	consumerName string
 
+	// partitionID is this engine's partition. Phase 1 uses a single
+	// partition (0); the value is stamped on every emitted envelope.
+	partitionID int
+
+	// eventSequence is a monotonically increasing counter per envelope,
+	// giving downstream consumers a stable ordering hint.
+	eventSequence atomic.Uint64
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -87,6 +98,7 @@ func NewEngine(rm *redis.RedisManager) (*Engine, error) {
 		metrics:      NewMetrics(),
 
 		consumerName: uuid.NewString(),
+		partitionID:  0,
 
 		ctx:    ctx,
 		cancel: cancel,
@@ -1080,20 +1092,37 @@ func (e *Engine) publishTrade(
 		return err
 	}
 
-	// Persistence consumer.
-	if err := client.Publish(
+	envelope := events.NewEnvelope(events.NewEnvelopeParams{
+		Type:        events.EventTradeExecuted,
+		Data:        data,
+		PartitionID: e.partitionID,
+		Sequence:    e.eventSequence.Add(1),
+	})
+
+	envBytes, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+
+	// Persistence consumer: the DB worker consumes events:out via a
+	// consumer group, so a crashed worker does not lose trades.
+	if err := client.XAdd(
 		context.Background(),
-		"trades",
-		data,
+		&rd.XAddArgs{
+			Stream: events.EventStream,
+			Values: map[string]interface{}{
+				"event": string(envBytes),
+			},
+		},
 	).Err(); err != nil {
 		return err
 	}
 
-	// WebSocket consumer.
+	// WebSocket consumer: same envelope, published for real-time fan-out.
 	if err := client.Publish(
 		context.Background(),
-		"ws:updates",
-		data,
+		events.WSChannel,
+		envBytes,
 	).Err(); err != nil {
 		return err
 	}
