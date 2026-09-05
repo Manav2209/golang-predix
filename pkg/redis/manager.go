@@ -14,6 +14,16 @@ type MessageToEngine struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// CommandStream is the Redis Stream carrying engine commands.
+//
+// Naming is partition-ready: a sharded deployment would use
+// "commands:{partitionId}". Phase 1 of the distributed rollout uses
+// a single partition while keeping the routing seam in place.
+const CommandStream = "commands"
+
+// CommandGroup is the consumer group name shared by engine replicas.
+const CommandGroup = "engines"
+
 type EngineResponse struct {
 	Success bool            `json:"success"`
 	Error   string          `json:"error,omitempty"`
@@ -42,8 +52,22 @@ func (r *RedisManager) SendAndAwait(ctx context.Context, msg MessageToEngine) (*
 	responseChan := make(chan *EngineResponse, 1)
 	errChan := make(chan error, 1)
 
-	sub := r.client.Subscribe(ctx, clientID)
+	// Detached context: the command must not be lost when the caller
+	// disconnects or the request is canceled. The engine processes it
+	// regardless; we only stop waiting for the reply.
+	bg := context.Background()
+
+	sub := r.client.Subscribe(bg, clientID)
 	defer sub.Close()
+
+	// Confirm the subscription is actually active before publishing, so a
+	// fast engine response cannot be published before we are subscribed.
+	confirmCtx, confirmCancel := context.WithTimeout(bg, 5*time.Second)
+	defer confirmCancel()
+
+	if _, err := sub.Receive(confirmCtx); err != nil {
+		return nil, err
+	}
 
 	go func() {
 		msgChan := sub.Channel()
@@ -60,16 +84,18 @@ func (r *RedisManager) SendAndAwait(ctx context.Context, msg MessageToEngine) (*
 		}
 	}()
 
-	payload := map[string]interface{}{
-		"clientId": clientID,
-		"message":  msg,
-	}
-	data, err := json.Marshal(payload)
+	rawMsg, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := r.publisher.LPush(ctx, "messages", data).Err(); err != nil {
+	if err := r.publisher.XAdd(bg, &redis.XAddArgs{
+		Stream: CommandStream,
+		Values: map[string]interface{}{
+			"clientId": clientID,
+			"message":  string(rawMsg),
+		},
+	}).Err(); err != nil {
 		return nil, err
 	}
 

@@ -8,12 +8,14 @@ import (
 	"log"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"predix/pkg/redis"
 
 	"github.com/google/uuid"
+	rd "github.com/redis/go-redis/v9"
 )
 
 var (
@@ -42,6 +44,11 @@ type Engine struct {
 	redisManager *redis.RedisManager
 	wal          *WAL
 	metrics      *Metrics
+
+	// consumerName identifies this engine instance to the stream consumer
+	// group. It is used for XREADGROUP and for reclaiming pending entries
+	// after a crash.
+	consumerName string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -72,6 +79,8 @@ func NewEngine(rm *redis.RedisManager) (*Engine, error) {
 		redisManager: rm,
 		wal:          wal,
 		metrics:      NewMetrics(),
+
+		consumerName: uuid.NewString(),
 
 		ctx:    ctx,
 		cancel: cancel,
@@ -127,11 +136,43 @@ func (e *Engine) Shutdown(ctx context.Context) {
 func (e *Engine) consumeMessages() {
 	client := e.redisManager.GetClient()
 
+	if err := e.ensureCommandGroup(client); err != nil {
+		log.Println("stream group setup error:", err)
+		return
+	}
+
+	// Reclaim pending entries left by a crashed instance within our group
+	// (MinIdle ensures we never steal work a live engine is still processing).
+	claimed, _, err := client.XAutoClaim(
+		e.ctx,
+		&rd.XAutoClaimArgs{
+			Stream:   redis.CommandStream,
+			Group:    redis.CommandGroup,
+			Consumer: e.consumerName,
+			MinIdle:  10 * time.Second,
+			Start:    "0-0",
+		},
+	).Result()
+
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Println("XAutoClaim error:", err)
+	}
+
+	for _, msg := range claimed {
+		e.processStreamEntry(client, msg.ID, msg.Values)
+	}
+
 	for {
-		result, err := client.BRPop(
+		// Block for the next command in the group.
+		streams, err := client.XReadGroup(
 			e.ctx,
-			0,
-			"messages",
+			&rd.XReadGroupArgs{
+				Group:    redis.CommandGroup,
+				Consumer: e.consumerName,
+				Streams:  []string{redis.CommandStream, ">"},
+				Count:    10,
+				Block:    0,
+			},
 		).Result()
 
 		if err != nil {
@@ -139,9 +180,8 @@ func (e *Engine) consumeMessages() {
 				return
 			}
 
-			log.Println("BRPop error:", err)
+			log.Println("XReadGroup error:", err)
 
-			// Don't spin aggressively if Redis is unavailable.
 			select {
 			case <-time.After(time.Second):
 			case <-e.ctx.Done():
@@ -151,68 +191,89 @@ func (e *Engine) consumeMessages() {
 			continue
 		}
 
-		if len(result) != 2 {
-			log.Println("invalid BRPop response")
-			continue
+		for _, s := range streams {
+			for _, msg := range s.Messages {
+				e.processStreamEntry(client, msg.ID, msg.Values)
+			}
 		}
+	}
+}
 
-		data := result[1]
+func (e *Engine) ensureCommandGroup(client *rd.Client) error {
+	err := client.XGroupCreateMkStream(
+		e.ctx,
+		redis.CommandStream,
+		redis.CommandGroup,
+		"0-0",
+	).Err()
 
-		var payload struct {
-			ClientID string          `json:"clientId"`
-			Message  json.RawMessage `json:"message"`
-		}
+	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+		return err
+	}
 
-		if err := json.Unmarshal(
-			[]byte(data),
-			&payload,
-		); err != nil {
-			log.Println("payload unmarshal error:", err)
-			continue
-		}
+	return nil
+}
 
-		if payload.ClientID == "" {
-			log.Println("message missing clientId")
-			continue
-		}
-
-		var msg redis.MessageToEngine
-
-		if err := json.Unmarshal(
-			payload.Message,
-			&msg,
-		); err != nil {
-			log.Println("message unmarshal error:", err)
-			continue
-		}
-
-		log.Printf(
-			"Received message type=%s clientId=%s",
-			msg.Type,
-			payload.ClientID,
-		)
-
-		response := e.handleMessage(msg)
-
-		respBytes, err := json.Marshal(response)
-		if err != nil {
-			log.Println("response marshal error:", err)
-			continue
-		}
-
-		if err := client.Publish(
+func (e *Engine) processStreamEntry(
+	client *rd.Client,
+	entryID string,
+	values map[string]interface{},
+) {
+	defer func() {
+		// Acknowledge once the command has been handled and the reply sent.
+		// If we crash in between, the entry stays pending and is redelivered
+		// on restart (XAUTOCLAIM), making the command stream at-least-once.
+		if ackErr := client.XAck(
 			e.ctx,
-			payload.ClientID,
-			respBytes,
-		).Err(); err != nil {
-			// During shutdown this is expected.
-			if !errors.Is(err, context.Canceled) {
-				log.Println("response publish error:", err)
-			}
+			redis.CommandStream,
+			redis.CommandGroup,
+			entryID,
+		).Err(); ackErr != nil && !errors.Is(ackErr, context.Canceled) {
+			log.Println("XAck error:", ackErr)
+		}
+	}()
 
-			if e.ctx.Err() != nil {
-				return
-			}
+	clientID, _ := values["clientId"].(string)
+
+	if clientID == "" {
+		log.Println("message missing clientId")
+		return
+	}
+
+	rawMessage, _ := values["message"].(string)
+
+	var msg redis.MessageToEngine
+
+	if err := json.Unmarshal(
+		[]byte(rawMessage),
+		&msg,
+	); err != nil {
+		log.Println("message unmarshal error:", err)
+		return
+	}
+
+	log.Printf(
+		"Received message type=%s clientId=%s",
+		msg.Type,
+		clientID,
+	)
+
+	response := e.handleMessage(msg)
+
+	respBytes, err := json.Marshal(response)
+	if err != nil {
+		log.Println("response marshal error:", err)
+		return
+	}
+
+	if err := client.Publish(
+		e.ctx,
+		clientID,
+		respBytes,
+	).Err(); err != nil {
+		// During shutdown this is expected.
+		if !errors.Is(err, context.Canceled) {
+			log.Println("response publish error:", err)
 		}
 	}
 }
