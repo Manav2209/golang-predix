@@ -1163,6 +1163,10 @@ func (e *Engine) emitEvent(
 	broadcast bool,
 ) error {
 
+	if e.redisManager == nil {
+		return nil
+	}
+
 	envelope := events.NewEnvelope(events.NewEnvelopeParams{
 		Type:        envType,
 		Data:        data,
