@@ -436,10 +436,14 @@ func (e *Engine) handleCreateOrder(
 
 	e.mu.Lock()
 
-	if _, exists := e.orders[order.ID]; exists {
+	if existing, exists := e.orders[order.ID]; exists {
 		e.mu.Unlock()
 
-		return failure(ErrOrderAlreadyExists.Error())
+		// A client resubmitting the same order confirms instead of failing.
+		return successJSON(map[string]any{
+			"orderId": existing.ID,
+			"status":  existing.Status,
+		})
 	}
 
 	if _, exists := e.markets[order.EventID]; !exists {
@@ -467,6 +471,31 @@ func (e *Engine) handleCreateOrder(
 				fmt.Sprintf("failed to persist order: %v", err),
 			)
 		}
+	}
+
+	// Notify the DB worker BEFORE the order can be matched, so the events
+	// stream always sees ORDER_CREATED ahead of any TRADE_EXECUTED for it.
+	orderData, err := json.Marshal(order)
+	if err != nil {
+		e.mu.Lock()
+		delete(e.orders, order.ID)
+		order.Status = StatusRejected
+		e.mu.Unlock()
+
+		return failure("failed to serialize order")
+	}
+
+	if err := e.emitEvent(
+		events.EventOrderCreated,
+		orderData,
+		false,
+	); err != nil {
+		e.mu.Lock()
+		delete(e.orders, order.ID)
+		order.Status = StatusRejected
+		e.mu.Unlock()
+
+		return failure("failed to stream order creation")
 	}
 
 	// Queue order for matching.
@@ -816,15 +845,18 @@ func (e *Engine) handleCancelOrder(
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	order, exists := e.orders[req.OrderID]
 
 	if !exists {
+		e.mu.Unlock()
+
 		return failure(ErrOrderNotFound.Error())
 	}
 
 	if req.EventID != "" && order.EventID != req.EventID {
+		e.mu.Unlock()
+
 		return failure("order does not belong to event")
 	}
 
@@ -832,12 +864,16 @@ func (e *Engine) handleCancelOrder(
 		order.Status == StatusCanceled ||
 		order.Status == StatusRejected {
 
+		e.mu.Unlock()
+
 		return failure(ErrOrderNotCancelable.Error())
 	}
 
 	market, exists := e.markets[order.EventID]
 
 	if !exists {
+		e.mu.Unlock()
+
 		return failure(ErrEventNotFound.Error())
 	}
 
@@ -856,6 +892,25 @@ func (e *Engine) handleCancelOrder(
 	}
 
 	order.Status = StatusCanceled
+
+	e.mu.Unlock()
+
+	// Never perform Redis I/O while holding the engine lock.
+	cancelData, _ := json.Marshal(map[string]any{
+		"orderId": order.ID,
+	})
+
+	if err := e.emitEvent(
+		events.EventOrderCanceled,
+		cancelData,
+		false,
+	); err != nil {
+		log.Printf(
+			"failed to emit order canceled %s: %v",
+			order.ID,
+			err,
+		)
+	}
 
 	return successJSON(map[string]any{
 		"orderId": order.ID,
@@ -1085,15 +1140,31 @@ func (e *Engine) publishTrade(
 	trade *Trade,
 ) error {
 
-	client := e.redisManager.GetClient()
-
 	data, err := json.Marshal(trade)
 	if err != nil {
 		return err
 	}
 
+	return e.emitEvent(
+		events.EventTradeExecuted,
+		data,
+		true,
+	)
+}
+
+// emitEvent stamps an envelope with this engine's partition and sequence,
+// appends it to the events:out stream for persistence, and optionally
+// publishes the same envelope to the WebSocket channel for fan-out.
+//
+// It never runs while the engine mutex is held.
+func (e *Engine) emitEvent(
+	envType events.EventType,
+	data json.RawMessage,
+	broadcast bool,
+) error {
+
 	envelope := events.NewEnvelope(events.NewEnvelopeParams{
-		Type:        events.EventTradeExecuted,
+		Type:        envType,
 		Data:        data,
 		PartitionID: e.partitionID,
 		Sequence:    e.eventSequence.Add(1),
@@ -1104,8 +1175,10 @@ func (e *Engine) publishTrade(
 		return err
 	}
 
+	client := e.redisManager.GetClient()
+
 	// Persistence consumer: the DB worker consumes events:out via a
-	// consumer group, so a crashed worker does not lose trades.
+	// consumer group, so a crashed worker does not lose events.
 	if err := client.XAdd(
 		context.Background(),
 		&rd.XAddArgs{
@@ -1118,18 +1191,21 @@ func (e *Engine) publishTrade(
 		return err
 	}
 
-	// WebSocket consumer: same envelope, published for real-time fan-out.
-	if err := client.Publish(
-		context.Background(),
-		events.WSChannel,
-		envBytes,
-	).Err(); err != nil {
-		return err
+	// WebSocket consumer: real-time fan-out to browsers.
+	if broadcast {
+		if err := client.Publish(
+			context.Background(),
+			events.WSChannel,
+			envBytes,
+		).Err(); err != nil {
+			return err
+		}
 	}
 
 	log.Printf(
-		"Trade executed: %+v",
-		trade,
+		"event emitted type=%s sequence=%d",
+		envType,
+		envelope.Sequence,
 	)
 
 	return nil
