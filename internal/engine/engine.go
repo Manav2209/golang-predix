@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -317,6 +318,19 @@ func (e *Engine) handleCreateOrder(
 		orderID = uuid.NewString()
 	}
 
+	// Convert incoming floats to fixed-point inside the boundary.
+	quantity := int64(math.Floor(req.Quantity))
+
+	if math.Mod(req.Quantity, 1.0) != 0 {
+		return failure("quantity must be a whole number of shares")
+	}
+
+	if quantity <= 0 {
+		return failure("quantity must be greater than zero")
+	}
+
+	price := ScalePrice(req.Price)
+
 	order := &Order{
 		ID:        orderID,
 		EventID:   req.EventID,
@@ -325,11 +339,11 @@ func (e *Engine) handleCreateOrder(
 		Outcome:   req.Outcome,
 		Side:      req.Side,
 
-		Quantity:          req.Quantity,
+		Quantity:          quantity,
 		FilledQuantity:    0,
-		RemainingQuantity: req.Quantity,
+		RemainingQuantity: quantity,
 
-		Price:     req.Price,
+		Price:     price,
 		Status:    StatusPending,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -670,7 +684,7 @@ func (e *Engine) removeInvalidAsks(book *OrderBook) {
 func buildTrade(
 	taker *Order,
 	maker *Order,
-	quantity float64,
+	quantity int64,
 ) *Trade {
 
 	trade := &Trade{
@@ -841,7 +855,7 @@ func aggregateBids(
 	orders []*Order,
 ) []OrderBookEntry {
 
-	levels := make(map[float64]float64)
+	levels := make(map[int64]int64)
 
 	for _, order := range orders {
 
@@ -890,7 +904,7 @@ func aggregateAsks(
 	orders []*Order,
 ) []OrderBookEntry {
 
-	levels := make(map[float64]float64)
+	levels := make(map[int64]int64)
 
 	for _, order := range orders {
 
@@ -1021,7 +1035,7 @@ func (e *Engine) publishTrade(
 
 	return nil
 }
-func min(a, b float64) float64 {
+func min(a, b int64) int64 {
 	if a < b {
 		return a
 	}

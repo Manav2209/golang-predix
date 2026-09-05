@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"predix/internal/dto"
+	"predix/internal/engine"
 	"predix/pkg/redis"
 
 	"github.com/gin-gonic/gin"
@@ -46,7 +47,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 
 	payload := map[string]interface{}{
 		"eventId":   req.EventID,
-		"price":     req.Price,
+		"price":     engine.ScalePrice(req.Price),
 		"quantity":  req.Quantity,
 		"side":      req.Side,
 		"outcome":   req.Outcome,

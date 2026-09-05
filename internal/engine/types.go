@@ -19,6 +19,22 @@ const (
 	StatusRejected = "REJECTED"
 )
 
+// PriceScale is the fixed-point multiplier for prices.
+//
+// An int64 price is stored in units of 1/10000, so 0.4370 -> 4370 and 1.00 -> 10000.
+// Conversion between float64 and int64 only happens at the API boundary.
+const PriceScale int64 = 10000
+
+// ScalePrice converts a float64 price into fixed-point units.
+func ScalePrice(f float64) int64 {
+	return int64(f*float64(PriceScale) + 0.5)
+}
+
+// UnscalePrice converts fixed-point units back to a float64 price.
+func UnscalePrice(v int64) float64 {
+	return float64(v) / float64(PriceScale)
+}
+
 type Order struct {
 	ID        string    `json:"id"`
 	EventID   string    `json:"eventId"`
@@ -27,17 +43,18 @@ type Order struct {
 	Outcome   string    `json:"outcome"`
 	Side      string    `json:"side"`
 
-	// Quantity is the original requested quantity.
-	Quantity float64 `json:"quantity"`
+	// Quantity is the original requested quantity (whole shares).
+	Quantity int64 `json:"quantity"`
 
 	// FilledQuantity tracks how much has been executed.
-	FilledQuantity float64 `json:"filledQuantity"`
+	FilledQuantity int64 `json:"filledQuantity"`
 
 	// RemainingQuantity is what is still available to match.
-	RemainingQuantity float64 `json:"remainingQuantity"`
+	RemainingQuantity int64 `json:"remainingQuantity"`
 
-	Price float64 `json:"price"`
-	Status string  `json:"status"`
+	// Price is a fixed-point price in units of 1/10000.
+	Price  int64     `json:"price"`
+	Status string    `json:"status"`
 
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -60,8 +77,11 @@ type Trade struct {
 	// BUY or SELL of the taker.
 	TakerSide string `json:"takerSide"`
 
-	Quantity float64 `json:"quantity"`
-	Price    float64 `json:"price"`
+	// Quantity is whole shares.
+	Quantity int64 `json:"quantity"`
+
+	// Price is a fixed-point price in units of 1/10000.
+	Price int64 `json:"price"`
 
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -100,9 +120,13 @@ func (m *Market) Book(outcome string) *OrderBook {
 }
 
 type OrderBookEntry struct {
-	Price    float64 `json:"price"`
-	Quantity float64 `json:"quantity"`
-	Total    float64 `json:"total"`
+	// Price is in fixed-point units (1/10000). Quantity is whole shares.
+	Price    int64 `json:"price"`
+	Quantity int64 `json:"quantity"`
+
+	// Total is cash in units of 1/10000 (Quantity * Price / PriceScale would be scaled,
+	// but we store value as Quantity * Price).
+	Total int64 `json:"total"`
 }
 
 type Depth struct {

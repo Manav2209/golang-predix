@@ -16,8 +16,8 @@ type OutgoingMessage struct {
 }
 
 type TradeData struct {
-	Price     string `json:"price"`
-	Quantity  string `json:"quantity"`
+	Price     int64  `json:"price"`
+	Quantity  int64  `json:"quantity"`
 	Timestamp int64  `json:"timestamp"`
 	EventID   string `json:"eventId"`
 	UserID    string `json:"userId"`
