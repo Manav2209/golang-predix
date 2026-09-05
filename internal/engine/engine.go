@@ -411,7 +411,9 @@ func (e *Engine) handleCreateOrder(
 		return failure("quantity must be greater than zero")
 	}
 
-	price := ScalePrice(req.Price)
+	// The handler already converted the human price to fixed-point
+	// (1/10000) units at the API boundary; do not scale again here.
+	price := int64(req.Price)
 
 	order := &Order{
 		ID:        orderID,
