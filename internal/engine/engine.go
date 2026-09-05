@@ -53,7 +53,13 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	wg sync.WaitGroup
+	// consumerWG tracks the Redis stream consumer goroutine.
+	// processorWG tracks the order-matching goroutine.
+	//
+	// They are separate so Shutdown can stop the consumer first, then close
+	// the pending queue, and only then wait for the processor to drain it.
+	consumerWG  sync.WaitGroup
+	processorWG sync.WaitGroup
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -91,15 +97,17 @@ func (e *Engine) Start() {
 	e.startOnce.Do(func() {
 		log.Println("Engine started. Waiting for orders...")
 
-		e.wg.Add(2)
+		e.consumerWG.Add(1)
 
 		go func() {
-			defer e.wg.Done()
+			defer e.consumerWG.Done()
 			e.consumeMessages()
 		}()
 
+		e.processorWG.Add(1)
+
 		go func() {
-			defer e.wg.Done()
+			defer e.processorWG.Done()
 			e.processOrders()
 		}()
 	})
@@ -109,16 +117,17 @@ func (e *Engine) Shutdown(ctx context.Context) {
 	e.stopOnce.Do(func() {
 		log.Println("Shutting down engine...")
 
-		// Stop Redis consumer.
+		// Stop the Redis consumer. The processor is still alive at this
+		// point and keeps draining the pending queue.
 		e.cancel()
+		e.consumerWG.Wait()
 
-		// Wait for consumer to stop.
-		//
-		// processOrders is still alive at this point.
-		// We close the queue only after the consumer is gone.
-		e.wg.Wait()
-
+		// Close only after the consumer is gone, so nothing else can write
+		// to the queue. Closing lets the processor's range loop drain the
+		// remaining buffered orders and then exit.
 		close(e.pendingQueue)
+
+		e.processorWG.Wait()
 
 		if e.wal != nil {
 			if err := e.wal.Close(); err != nil {
